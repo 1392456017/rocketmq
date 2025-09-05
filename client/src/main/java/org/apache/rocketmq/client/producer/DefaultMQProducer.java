@@ -367,7 +367,7 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
      *
      * <strong> Much internal initializing procedures are carried out to make this instance prepared, thus, it's a must
      * to invoke this method before sending or querying messages. </strong> </p>
-     *
+     * 为了使该实例做好准备，需要执行许多内部初始化程序，因此，在发送或查询信息之前，必须调用该方法
      * @throws MQClientException if there is any unexpected error.
      */
     @Override
