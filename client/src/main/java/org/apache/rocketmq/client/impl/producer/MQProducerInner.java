@@ -16,26 +16,29 @@
  */
 package org.apache.rocketmq.client.impl.producer;
 
-import java.util.Set;
 import org.apache.rocketmq.client.producer.TransactionCheckListener;
 import org.apache.rocketmq.client.producer.TransactionListener;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.remoting.protocol.header.CheckTransactionStateRequestHeader;
 
+import java.util.Set;
+// MQProducerInner 是一个内部生产者接口，定义了生产者内部需要实现的核心功能。
 public interface MQProducerInner {
+    // 获取发布主题列表
     Set<String> getPublishTopicList();
-
+    // 检查主题是否需要更新
     boolean isPublishTopicNeedUpdate(final String topic);
 
     TransactionCheckListener checkListener();
+    // 获取事务监听器
     TransactionListener getCheckListener();
-
+    // 检查事务状态
     void checkTransactionState(
         final String addr,
         final MessageExt msg,
         final CheckTransactionStateRequestHeader checkRequestHeader);
-
+    // 更新主题发布信息
     void updateTopicPublishInfo(final String topic, final TopicPublishInfo info);
-
+    // 是否单元模式
     boolean isUnitMode();
 }
