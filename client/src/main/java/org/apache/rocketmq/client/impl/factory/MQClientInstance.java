@@ -18,40 +18,13 @@ package org.apache.rocketmq.client.impl.factory;
 
 import com.alibaba.fastjson.JSON;
 import io.netty.channel.Channel;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.ClientConfig;
 import org.apache.rocketmq.client.admin.MQAdminExtInner;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
-import org.apache.rocketmq.client.impl.ClientRemotingProcessor;
-import org.apache.rocketmq.client.impl.FindBrokerResult;
-import org.apache.rocketmq.client.impl.MQAdminImpl;
-import org.apache.rocketmq.client.impl.MQClientAPIImpl;
-import org.apache.rocketmq.client.impl.MQClientManager;
-import org.apache.rocketmq.client.impl.consumer.DefaultMQPullConsumerImpl;
-import org.apache.rocketmq.client.impl.consumer.DefaultMQPushConsumerImpl;
-import org.apache.rocketmq.client.impl.consumer.MQConsumerInner;
-import org.apache.rocketmq.client.impl.consumer.ProcessQueue;
-import org.apache.rocketmq.client.impl.consumer.PullMessageService;
-import org.apache.rocketmq.client.impl.consumer.RebalanceService;
+import org.apache.rocketmq.client.impl.*;
+import org.apache.rocketmq.client.impl.consumer.*;
 import org.apache.rocketmq.client.impl.producer.DefaultMQProducerImpl;
 import org.apache.rocketmq.client.impl.producer.MQProducerInner;
 import org.apache.rocketmq.client.impl.producer.TopicPublishInfo;
@@ -77,14 +50,17 @@ import org.apache.rocketmq.remoting.protocol.NamespaceUtil;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.body.ConsumeMessageDirectlyResult;
 import org.apache.rocketmq.remoting.protocol.body.ConsumerRunningInfo;
-import org.apache.rocketmq.remoting.protocol.heartbeat.ConsumerData;
-import org.apache.rocketmq.remoting.protocol.heartbeat.HeartbeatData;
-import org.apache.rocketmq.remoting.protocol.heartbeat.MessageModel;
-import org.apache.rocketmq.remoting.protocol.heartbeat.ProducerData;
-import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
+import org.apache.rocketmq.remoting.protocol.heartbeat.*;
 import org.apache.rocketmq.remoting.protocol.route.BrokerData;
 import org.apache.rocketmq.remoting.protocol.route.QueueData;
 import org.apache.rocketmq.remoting.protocol.route.TopicRouteData;
+
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.apache.rocketmq.remoting.rpc.ClientMetadata.topicRouteData2EndpointsForStaticTopic;
 
@@ -110,6 +86,16 @@ public class MQClientInstance {
      */
     private final ConcurrentMap<String, MQAdminExtInner> adminExtTable = new ConcurrentHashMap<>();
     private final NettyClientConfig nettyClientConfig;
+    /**
+     * MQ客户端API实现类，负责与RocketMQ服务端的所有网络通信
+     * 主要职责包括：
+     * 1. 网络通信管理：基于Netty实现与NameServer和Broker的网络连接
+     * 2. 消息发送：处理生产者发送消息的网络请求
+     * 3. 消息拉取：处理消费者拉取消息的网络请求
+     * 4. 路由管理：从NameServer获取Topic路由信息
+     * 5. 心跳管理：定期向Broker发送心跳保持连接
+     * 6. 管理操作：提供各种管理API的网络调用实现
+     */
     private final MQClientAPIImpl mQClientAPIImpl;
     private final MQAdminImpl mQAdminImpl;
     private final ConcurrentMap<String/* Topic */, TopicRouteData> topicRouteTable = new ConcurrentHashMap<>();
@@ -300,30 +286,51 @@ public class MQClientInstance {
         return mqList;
     }
 
+    /**
+     * 启动MQ客户端实例
+     * 这是客户端的核心启动方法，负责初始化和启动所有必要的服务组件
+     */
     public void start() throws MQClientException {
 
         synchronized (this) {
             switch (this.serviceState) {
                 case CREATE_JUST:
+                    // 先设置为启动失败状态，如果启动过程中出现异常，状态会保持为失败
                     this.serviceState = ServiceState.START_FAILED;
-                    // If not specified,looking address from name server
+
+                    // 1. 如果没有指定NameServer地址，则从配置中心或默认位置获取NameServer地址
+                    // NameServer是RocketMQ的路由注册中心，负责管理Broker的路由信息
                     if (null == this.clientConfig.getNamesrvAddr()) {
                         this.mQClientAPIImpl.fetchNameServerAddr();
                     }
-                    // Start request-response channel
+
+                    // 2. 启动网络通信层（基于Netty的请求-响应通道）
+                    // 这是客户端与Broker、NameServer通信的基础设施
                     this.mQClientAPIImpl.start();
-                    // Start various schedule tasks
+
+                    // 3. 启动各种定时任务
+                    // 包括：定时更新路由信息、发送心跳、持久化消费进度等
                     this.startScheduledTask();
-                    // Start pull service
+
+                    // 4. 启动拉取消息服务
+                    // 负责从Broker拉取消息的后台服务线程
                     this.pullMessageService.start();
-                    // Start rebalance service
+
+                    // 5. 启动负载均衡服务
+                    // 负责消费者的队列分配和重新平衡
                     this.rebalanceService.start();
-                    // Start push service
+
+                    // 6. 启动内置的默认生产者
+                    // 用于发送一些内部消息，如消费失败重试消息等
                     this.defaultMQProducer.getDefaultMQProducerImpl().start(false);
+
                     log.info("the client factory [{}] start OK", this.clientId);
+
+                    // 所有组件启动成功后，设置状态为运行中
                     this.serviceState = ServiceState.RUNNING;
                     break;
                 case START_FAILED:
+                    // 如果之前启动失败，抛出异常
                     throw new MQClientException("The Factory object[" + this.getClientId() + "] has been created before, and failed.", null);
                 default:
                     break;
